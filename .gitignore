@@ -1,0 +1,37 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Dependencies (uncomment for your stack)
+# node_modules/
+# __pycache__/
+# .venv/
+
+# Build output (uncomment for your stack)
+# dist/
+# build/
+# *.egg-info/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Spec Kit — exclude runtime cache only, keep constitution and memory docs
+.specify/memory/.cache
+.specify/memory/sessions/
+.specify/memory/tmp/
+
+# Cursor — exclude local workspace state
+.cursor/chat/
+.cursor/logs/

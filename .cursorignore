@@ -1,0 +1,14 @@
+# Spec Kit runtime output
+.specify/memory/
+
+# Build and dependency output (uncomment for your stack)
+# node_modules/
+# dist/
+# build/
+# __pycache__/
+# .venv/
+
+# Logs and temp files
+*.log
+*.tmp
+.DS_Store

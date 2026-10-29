@@ -1,0 +1,22 @@
+---
+description: Project-wide rules and context for all Cursor interactions
+alwaysApply: true
+---
+
+# Project context
+
+> The primary project context for this repo is in `AGENTS.md` at the repo root.
+> Please read that file first for project overview, tech stack, conventions,
+> and active work tracking.
+
+## Cursor-specific notes
+
+- Use `@AGENTS.md` to reference the main project context in any prompt
+- Use `@codebase` for semantic search across the project
+- Spec Kit artifacts (when used) are in `.specify/specs/`
+- `.cursorignore` is configured to exclude generated files from codebase indexing
+- Plans for in-flight work are in `.ai/plans/YYYYMMDD_branch-name/PLAN.md`
+  where the folder name matches the current git branch
+- Use `@.ai/plans/README.md` to see the index of active and completed work
+- Use `@.ai/plans/PLAN_TEMPLATE.md` or `@.ai/plans/OUTCOME_TEMPLATE.md` as
+  scaffolds when creating new plan files
