@@ -1,4 +1,8 @@
 {
+  "enabledPlugins": {
+    "superpowers@superpowers-dev": true,
+    "mattpocock-skills@claude-plugins-official": true
+  },
   "extraKnownMarketplaces": {
     "superpowers-dev": {
       "source": {
@@ -6,9 +10,5 @@
         "url": "https://github.com/obra/superpowers.git"
       }
     }
-  },
-  "enabledPlugins": {
-    "superpowers@superpowers-dev": true,
-    "mattpocock-skills@claude-plugins-official": true
   }
 }
