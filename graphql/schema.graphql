@@ -1,0 +1,641 @@
+# Scouts Activity Tracker: GraphQL API contract (DRAFT)
+#
+# Source: scouts-activity-tracker/docs/superpowers/specs/2026-10-28-users-and-domain-model-design.md
+# Terms: scouts-activity-tracker/docs/GLOSSARY.md
+#
+# Conventions
+# - Tenancy: every operation is scoped to the caller's Group, resolved from
+#   their identity. No operation takes a groupId.
+# - Authorization: every operation requires a signed-in, ACTIVE Leader.
+#   "Section access" means the Leader's accessibleSections (Admins: all).
+#   "Admin" operations are marked in their description.
+# - Optimistic concurrency: mutable records carry `version: Int!`. Mutations
+#   that edit one take `expectedVersion`. A mismatch fails with error type
+#   CONFLICT and the client shows the "another leader saved" message.
+# - Provenance: Attendance, Credit and ManualCompletion carry occurredOn,
+#   recordedAt, recordedBy and source.
+# - Subscriptions: AppSync needs `@aws_subscribe(mutations: [...])` on each
+#   subscription. It is listed in a comment to keep this file vendor-neutral
+#   and is added by the deploy step.
+# - Scalars AWSDate, AWSDateTime, AWSURL are the AppSync scalars.
+
+scalar AWSDate
+scalar AWSDateTime
+scalar AWSURL
+
+# ---------------------------------------------------------------- enums
+
+"""How a record entered the app."""
+enum Source { LIVE BACK_ENTERED HISTORICAL }
+
+"""Where a Leader is in sign-up. ARCHIVED Leaders cannot sign in."""
+enum LeaderStatus { INVITED ACTIVE ARCHIVED }
+
+"""A Section is RETIRED instead of deleted once it has Youth or Leaders."""
+enum SectionStatus { ACTIVE RETIRED }
+
+"""Status of an entry in a per-Group pick list. RETIRED entries disappear from pickers but stay on past records."""
+enum ListEntryStatus { ACTIVE RETIRED }
+
+"""A person's role relative to a Youth."""
+enum PickupRole { GUARDIAN AUTHORIZED_PICKUP }
+
+"""Who took a Youth at check-out."""
+enum CollectedByKind {
+  """Someone on the Youth's Pickup authorization list."""
+  PICKUP_AUTHORIZATION
+  """Free-text name of someone not on the list. Flagged, no review step."""
+  NOT_ON_LIST
+  """Checked out by close-out: 'Unknown - automatically checked out via activity close-out'."""
+  CLOSE_OUT_UNKNOWN
+}
+
+"""Whether a catalog Badge is a plain Badge or an Award (a rule over Badges)."""
+enum BadgeKind { BADGE AWARD }
+
+"""The kinds of Item in a Requirement group."""
+enum ItemKind { REQUIREMENT AUTHORED_SLOT SIGN_OFF CHILD_BADGE }
+
+"""Review state of a Credit. Only CONFIRMED counts toward progress."""
+enum CreditStatus { SUGGESTED CONFIRMED REJECTED }
+
+"""Computed progress of a Youth on an Item, group, Badge or Award."""
+enum ProgressStatus { NOT_STARTED IN_PROGRESS COMPLETE }
+
+# ------------------------------------------------------- organization
+
+"""The tenant: one local scouts group."""
+type Group {
+  id: ID!
+  name: String!
+  version: Int!
+}
+
+"""A Group's program (Beavers, Cubs, Scouts, or one an Admin adds). Name is unique within the Group."""
+type Section {
+  id: ID!
+  name: String!
+  status: SectionStatus!
+  youthCount: Int!
+  leaderCount: Int!
+  version: Int!
+}
+
+"""A volunteer adult and the only kind of user. Removing one archives it."""
+type Leader {
+  id: ID!
+  name: String!
+  isAdmin: Boolean!
+  status: LeaderStatus!
+  accessibleSections: [Section!]!
+  version: Int!
+}
+
+"""Result of inviting a Leader or regenerating their link. The link is shown once."""
+type LeaderInvite {
+  leader: Leader!
+  """One-time private sign-up link."""
+  signUpLink: AWSURL!
+  """Link expiry: 72 hours after creation. A new link stops this one."""
+  expiresAt: AWSDateTime!
+}
+
+"""A Beaver, Cub or Scout. Data only. Holds name and birthdate only. No photo is stored."""
+type Youth {
+  id: ID!
+  name: String!
+  birthdate: AWSDate!
+  memberships: [Membership!]!
+  pickupAuthorizations: [PickupAuthorization!]!
+  version: Int!
+}
+
+"""A Youth's belonging to a Section over a date range. Moving up closes one and opens the next."""
+type Membership {
+  id: ID!
+  section: Section!
+  startDate: AWSDate!
+  """Null while the Youth is still a member."""
+  endDate: AWSDate
+}
+
+"""A parent or guardian, or another named person. Name only. May be shared across Youth, not required."""
+type Guardian {
+  id: ID!
+  name: String!
+  version: Int!
+}
+
+"""A person who may collect a particular Youth."""
+type PickupAuthorization {
+  id: ID!
+  guardian: Guardian!
+  role: PickupRole!
+}
+
+"""A named place in a Group, used as a Meeting's drop-off or pick-up point."""
+type Location {
+  id: ID!
+  name: String!
+  status: ListEntryStatus!
+  meetingCount: Int!
+  version: Int!
+}
+
+"""A reason for a Manual completion, picked from a per-Group list."""
+type CompletionReason {
+  id: ID!
+  name: String!
+  status: ListEntryStatus!
+  version: Int!
+}
+
+# ---------------------------------------------------- program delivery
+
+"""A planned piece of programming, reusable across Meetings and Sections."""
+type Activity {
+  id: ID!
+  title: String!
+  plan: String!
+  """Informational only. Never validated against a Meeting's length."""
+  durationMinutes: Int
+  supplies: String
+  leaderNotes: String
+  """Optional https link to more information."""
+  link: AWSURL
+  sections: [Section!]!
+  requirementLinks: [RequirementLink!]!
+  version: Int!
+}
+
+"""A mapping from an Activity to an Item it can count toward."""
+type RequirementLink {
+  id: ID!
+  activity: Activity!
+  item: Item!
+  """True when proposed by Bedrock and not yet accepted or rejected by a Leader."""
+  proposed: Boolean!
+  accepted: Boolean!
+  """Bedrock's short reasoning, when it proposed the link."""
+  rationale: String
+}
+
+"""One session for one or more Sections, with drop-off and pick-up places."""
+type Meeting {
+  id: ID!
+  sections: [Section!]!
+  startsAt: AWSDateTime!
+  endsAt: AWSDateTime!
+  dropOffLocation: Location!
+  """Defaults to the drop-off location."""
+  pickUpLocation: Location!
+  activities: [MeetingActivity!]!
+  """Youth whose Membership covers the date in any of the Meeting's Sections."""
+  roster: [Youth!]!
+  """Check-in, pickup and credit counts per Section, for the details view chips."""
+  counts: [SectionCounts!]!
+  version: Int!
+}
+
+"""Counts for one Section of a Meeting."""
+type SectionCounts {
+  section: Section!
+  expected: Int!
+  checkedIn: Int!
+  pickedUp: Int!
+  creditsToReview: Int!
+}
+
+"""An Activity placed in a Meeting, in order. There are no time slots."""
+type MeetingActivity {
+  id: ID!
+  activity: Activity!
+  order: Int!
+}
+
+"""Who collected a Youth."""
+type CollectedBy {
+  kind: CollectedByKind!
+  """Set when kind is PICKUP_AUTHORIZATION."""
+  pickupAuthorization: PickupAuthorization
+  """Set when kind is NOT_ON_LIST."""
+  freeTextName: String
+}
+
+"""One Youth's presence at one Meeting. Absent means no record, never a state."""
+type Attendance {
+  id: ID!
+  meeting: Meeting!
+  youth: Youth!
+  """Check-in always exists. The time may be missing when entered after the fact."""
+  checkedInAt: AWSDateTime
+  checkedOutAt: AWSDateTime
+  """Set once checked out."""
+  collectedBy: CollectedBy
+  occurredOn: AWSDate!
+  recordedAt: AWSDateTime!
+  recordedBy: Leader!
+  source: Source!
+  version: Int!
+}
+
+# ------------------------------------------------------------ catalog
+
+"""A catalog Badge or Award. Global, read-only and versioned. A null owner means Scouts Canada."""
+type Badge {
+  id: ID!
+  kind: BadgeKind!
+  """Family such as OAS, PAB, PERSONAL_PROGRESSION or TOP_SECTION_AWARD. Open string so loading never needs a schema change."""
+  family: String!
+  title: String!
+  """Sections it applies to, by name."""
+  sectionNames: [String!]!
+  """Advisory: Badges that normally come first. The UI warns, never blocks."""
+  previousStages: [Badge!]!
+  currentVersion: BadgeVersion!
+  versions: [BadgeVersion!]!
+}
+
+"""A revision of a Badge."""
+type BadgeVersion {
+  id: ID!
+  badge: Badge!
+  number: Int!
+  groups: [RequirementGroup!]!
+}
+
+"""A 'need N of M' rule over Items. 'All' is N equal to the item count."""
+type RequirementGroup {
+  id: ID!
+  title: String
+  defaultNeeded: Int!
+  """Section-specific N, keyed by Section name, replacing the default."""
+  sectionRules: [SectionNeeded!]!
+  items: [Item!]!
+}
+
+"""A Section-specific N."""
+type SectionNeeded {
+  sectionName: String!
+  needed: Int!
+}
+
+"""A member of a Requirement group."""
+type Item {
+  id: ID!
+  kind: ItemKind!
+  text: String!
+  """For AUTHORED_SLOT: confirmed Credits required."""
+  requiredCount: Int
+  """For CHILD_BADGE: the Badge that must be complete."""
+  childBadge: Badge
+  """Section names the Item is valid for. Empty means all."""
+  sectionNames: [String!]!
+}
+
+# ----------------------------------------------------------- progress
+
+"""Evidence that a Youth met an Item."""
+type Credit {
+  id: ID!
+  youth: Youth!
+  item: Item!
+  status: CreditStatus!
+  meetingActivity: MeetingActivity
+  """Title and note, used for PAB adventures."""
+  title: String
+  note: String
+  occurredOn: AWSDate!
+  recordedAt: AWSDateTime!
+  recordedBy: Leader!
+  confirmedBy: Leader
+  source: Source!
+  version: Int!
+}
+
+"""A Leader's sign-off on a Sign-off Item (such as a PAB review or presentation). Can be undone."""
+type SignOff {
+  id: ID!
+  youth: Youth!
+  item: Item!
+  signedBy: Leader!
+  signedAt: AWSDateTime!
+  """Set when undone. An undone sign-off does not count."""
+  revokedAt: AWSDateTime
+}
+
+"""A Leader's record that a Youth completed a whole Badge. Overrides computed progress; revocable."""
+type ManualCompletion {
+  id: ID!
+  youth: Youth!
+  badgeVersion: BadgeVersion!
+  completedOn: AWSDate!
+  reason: CompletionReason!
+  recordedBy: Leader!
+  source: Source!
+  revoked: Boolean!
+  version: Int!
+}
+
+"""The handing out of a completed Badge or Award. Cannot be undone."""
+type Awarding {
+  id: ID!
+  youth: Youth!
+  badgeVersion: BadgeVersion!
+  awardedOn: AWSDate!
+  awardedBy: Leader!
+}
+
+"""Computed progress on one Item. Counts are out of the group's M."""
+type ItemProgress {
+  item: Item!
+  status: ProgressStatus!
+  confirmedCredits: Int!
+  credits: [Credit!]!
+  signOff: SignOff
+}
+
+"""Computed progress on one Requirement group."""
+type GroupProgress {
+  group: RequirementGroup!
+  needed: Int!
+  total: Int!
+  satisfied: Int!
+  items: [ItemProgress!]!
+}
+
+"""Computed progress of one Youth on one Badge or Award. Never stored or typed in."""
+type BadgeProgress {
+  youth: Youth!
+  badge: Badge!
+  """The version the Youth is pinned to."""
+  badgeVersion: BadgeVersion!
+  status: ProgressStatus!
+  groups: [GroupProgress!]!
+  manualCompletion: ManualCompletion
+  awarding: Awarding
+  """Advisory: stage ordering was skipped."""
+  stageWarning: String
+}
+
+# -------------------------------------------------------- connections
+
+type YouthConnection { items: [Youth!]! nextToken: String }
+type MeetingConnection { items: [Meeting!]! nextToken: String }
+type ActivityConnection { items: [Activity!]! nextToken: String }
+type BadgeConnection { items: [Badge!]! nextToken: String }
+type BadgeProgressConnection { items: [BadgeProgress!]! nextToken: String }
+
+# -------------------------------------------------------------- inputs
+
+input SectionInput { name: String! }
+
+input LeaderInput {
+  name: String!
+  isAdmin: Boolean!
+  sectionIds: [ID!]!
+}
+
+input YouthInput {
+  name: String!
+  birthdate: AWSDate!
+  """Section for the first Membership. Create only."""
+  sectionId: ID
+  """Start of the first Membership. Create only."""
+  memberSince: AWSDate
+}
+
+input PickupAuthorizationInput {
+  """Reuse an existing Guardian, or leave null to create one from guardianName."""
+  guardianId: ID
+  guardianName: String
+  role: PickupRole!
+}
+
+input LocationInput { name: String! }
+
+input ActivityInput {
+  title: String!
+  plan: String!
+  durationMinutes: Int
+  supplies: String
+  leaderNotes: String
+  link: AWSURL
+  sectionIds: [ID!]!
+}
+
+input MeetingInput {
+  sectionIds: [ID!]!
+  startsAt: AWSDateTime!
+  endsAt: AWSDateTime!
+  dropOffLocationId: ID!
+  """Defaults to the drop-off location."""
+  pickUpLocationId: ID
+  """Activity ids in order."""
+  activityIds: [ID!]!
+}
+
+input DuplicateMeetingInput {
+  meetingId: ID!
+  """New start. Times of day and length are copied from the original."""
+  startsAt: AWSDateTime!
+}
+
+input CheckInInput {
+  meetingId: ID!
+  youthId: ID!
+  """Missing or approximate when entered after the fact."""
+  checkedInAt: AWSDateTime
+  source: Source
+}
+
+input CollectedByInput {
+  kind: CollectedByKind!
+  pickupAuthorizationId: ID
+  freeTextName: String
+}
+
+input CheckOutInput {
+  attendanceId: ID!
+  checkedOutAt: AWSDateTime
+  collectedBy: CollectedByInput!
+  expectedVersion: Int!
+}
+
+input AddCreditInput {
+  youthId: ID!
+  itemId: ID!
+  meetingActivityId: ID
+  title: String
+  note: String
+  occurredOn: AWSDate!
+  source: Source!
+  """Created CONFIRMED when true, SUGGESTED otherwise."""
+  confirmed: Boolean
+}
+
+input ManualCompletionInput {
+  youthId: ID!
+  badgeId: ID!
+  completedOn: AWSDate!
+  """Pick an existing reason, or give a new one to add to the list."""
+  reasonId: ID
+  newReasonName: String
+  source: Source!
+}
+
+input SignOffInput {
+  youthId: ID!
+  itemId: ID!
+}
+
+input AwardInput {
+  youthId: ID!
+  badgeId: ID!
+  awardedOn: AWSDate
+}
+
+# --------------------------------------------------------------- query
+
+type Query {
+  """The signed-in Leader."""
+  me: Leader!
+  group: Group!
+  sections(includeRetired: Boolean): [Section!]!
+  """Admin only."""
+  leaders(includeArchived: Boolean): [Leader!]!
+  """Youth in the Sections the caller can access. Past members only when includePast is true."""
+  youthList(sectionId: ID, includePast: Boolean, search: String, nextToken: String): YouthConnection!
+  youth(id: ID!): Youth
+  guardians(search: String): [Guardian!]!
+  locations(includeRetired: Boolean): [Location!]!
+  completionReasons(includeRetired: Boolean): [CompletionReason!]!
+
+  meetings(sectionId: ID, from: AWSDateTime, to: AWSDateTime, nextToken: String): MeetingConnection!
+  meeting(id: ID!): Meeting
+  """Attendance for a Meeting. Absent Youth have no record."""
+  attendance(meetingId: ID!): [Attendance!]!
+
+  activities(sectionId: ID, search: String, nextToken: String): ActivityConnection!
+  activity(id: ID!): Activity
+  """Catalog search, filtered to the given Sections."""
+  searchCatalog(text: String!, sectionIds: [ID!], nextToken: String): BadgeConnection!
+  badge(id: ID!): Badge
+
+  """Suggested, confirmed and rejected Credits for a Meeting activity, by Youth."""
+  creditsForMeetingActivity(meetingActivityId: ID!): [Credit!]!
+  """Progress of one Youth across Badges they have started."""
+  youthProgress(youthId: ID!): [BadgeProgress!]!
+  """Progress of every Youth in the caller's Sections on one Badge."""
+  badgeProgress(badgeId: ID!, sectionId: ID, nextToken: String): BadgeProgressConnection!
+  """Completed, not-yet-awarded Badges and Awards."""
+  toAward(sectionId: ID, nextToken: String): BadgeProgressConnection!
+  awarded(sectionId: ID, nextToken: String): [Awarding!]!
+}
+
+# ------------------------------------------------------------ mutation
+
+type Mutation {
+  # Group, Sections and Leaders (Admin only)
+  updateGroup(name: String!, expectedVersion: Int!): Group!
+  createSection(input: SectionInput!): Section!
+  renameSection(id: ID!, name: String!, expectedVersion: Int!): Section!
+  """Deletes a Section only if it has no Youth, Leaders or Meetings; otherwise fails. Use retireSection."""
+  deleteSection(id: ID!): ID!
+  retireSection(id: ID!, expectedVersion: Int!): Section!
+  reactivateSection(id: ID!, expectedVersion: Int!): Section!
+  createLeader(input: LeaderInput!): LeaderInvite!
+  updateLeader(id: ID!, input: LeaderInput!, expectedVersion: Int!): Leader!
+  """New one-time link, 72-hour expiry. Stops the previous link."""
+  regenerateSignUpLink(leaderId: ID!): LeaderInvite!
+  """Archives the Leader. Fails for the last Admin."""
+  archiveLeader(id: ID!, expectedVersion: Int!): Leader!
+  reactivateLeader(id: ID!, expectedVersion: Int!): Leader!
+
+  # Youth (any Leader with access to the Youth's Section)
+  createYouth(input: YouthInput!, pickups: [PickupAuthorizationInput!]): Youth!
+  updateYouth(id: ID!, input: YouthInput!, expectedVersion: Int!): Youth!
+  """Closes the current Membership and opens one in the new Section. startDate defaults to today."""
+  moveUpYouth(youthId: ID!, sectionId: ID!, startDate: AWSDate): Youth!
+  addPickupAuthorization(youthId: ID!, input: PickupAuthorizationInput!): PickupAuthorization!
+  removePickupAuthorization(id: ID!): ID!
+  """Permanent deletion of the Youth and all their records. A Guardian shared with another Youth is kept. The client requires the first name typed."""
+  deleteYouth(id: ID!): ID!
+
+  # Per-Group lists (any Leader)
+  createLocation(input: LocationInput!): Location!
+  renameLocation(id: ID!, name: String!, expectedVersion: Int!): Location!
+  setLocationStatus(id: ID!, status: ListEntryStatus!, expectedVersion: Int!): Location!
+  createCompletionReason(name: String!): CompletionReason!
+  renameCompletionReason(id: ID!, name: String!, expectedVersion: Int!): CompletionReason!
+  setCompletionReasonStatus(id: ID!, status: ListEntryStatus!, expectedVersion: Int!): CompletionReason!
+
+  # Activities and Meetings
+  createActivity(input: ActivityInput!): Activity!
+  updateActivity(id: ID!, input: ActivityInput!, expectedVersion: Int!): Activity!
+  linkRequirement(activityId: ID!, itemId: ID!): RequirementLink!
+  unlinkRequirement(linkId: ID!): ID!
+  """Accept or reject a Bedrock-proposed link."""
+  reviewRequirementLink(linkId: ID!, accept: Boolean!): RequirementLink!
+  """Asks Bedrock to propose links from the plan text and catalog only, never Youth data. Adds to earlier suggestions."""
+  suggestRequirementLinks(activityId: ID!): [RequirementLink!]!
+  createMeeting(input: MeetingInput!): Meeting!
+  updateMeeting(id: ID!, input: MeetingInput!, expectedVersion: Int!): Meeting!
+  """Copies Sections, locations, times of day and Activities. Never attendance."""
+  duplicateMeeting(input: DuplicateMeetingInput!): Meeting!
+  """Allowed any time. Confirmed Credits are kept and lose only their Meeting link. The client warns first if attendance started."""
+  deleteMeeting(id: ID!): ID!
+
+  # Attendance (action needs access to the Youth's Section)
+  """Checks a Youth in and creates suggested Credits for the Meeting's linked Items."""
+  checkIn(input: CheckInInput!): Attendance!
+  """Removes a check-in made in error. Only when not checked out."""
+  removeCheckIn(attendanceId: ID!, expectedVersion: Int!): ID!
+  checkOut(input: CheckOutInput!): Attendance!
+  undoCheckOut(attendanceId: ID!, expectedVersion: Int!): Attendance!
+  """Checks out everyone still here as CLOSE_OUT_UNKNOWN. Needs access to every Section in the Meeting."""
+  closeOutMeeting(meetingId: ID!): [Attendance!]!
+
+  # Credits, sign-offs, completions, awards
+  addCredit(input: AddCreditInput!): Credit!
+  """Confirm, reject or reset to suggested."""
+  setCreditStatus(id: ID!, status: CreditStatus!, expectedVersion: Int!): Credit!
+  """'Toggle all': set every listed Youth's Credit for one Item in one Meeting activity."""
+  setCreditsStatusForItem(meetingActivityId: ID!, itemId: ID!, status: CreditStatus!): [Credit!]!
+  signOff(input: SignOffInput!): SignOff!
+  undoSignOff(id: ID!): SignOff!
+  markBadgeComplete(input: ManualCompletionInput!): ManualCompletion!
+  revokeManualCompletion(id: ID!, expectedVersion: Int!): ManualCompletion!
+  """Cannot be undone."""
+  awardBadge(input: AwardInput!): Awarding!
+}
+
+# ------------------------------------------------------- subscription
+#
+# Every mutation above is live-synced. Subscriptions are filtered to the
+# caller's Group by the resolver.
+
+type Subscription {
+  # @aws_subscribe(mutations: ["createMeeting", "updateMeeting", "deleteMeeting", "duplicateMeeting"])
+  onMeetingChanged: Meeting
+  # @aws_subscribe(mutations: ["checkIn", "removeCheckIn", "checkOut", "undoCheckOut", "closeOutMeeting"])
+  onAttendanceChanged(meetingId: ID!): Attendance
+  # @aws_subscribe(mutations: ["addCredit", "setCreditStatus", "setCreditsStatusForItem"])
+  onCreditChanged(youthId: ID): Credit
+  # @aws_subscribe(mutations: ["signOff", "undoSignOff", "markBadgeComplete", "revokeManualCompletion", "awardBadge"])
+  onProgressChanged(youthId: ID): BadgeProgress
+  # @aws_subscribe(mutations: ["createActivity", "updateActivity", "linkRequirement", "unlinkRequirement", "reviewRequirementLink", "suggestRequirementLinks"])
+  onActivityChanged: Activity
+  # @aws_subscribe(mutations: ["createYouth", "updateYouth", "moveUpYouth", "addPickupAuthorization", "removePickupAuthorization"])
+  onYouthChanged: Youth
+  # @aws_subscribe(mutations: ["deleteYouth"])
+  onYouthDeleted: ID
+  # @aws_subscribe(mutations: ["updateGroup", "createSection", "renameSection", "retireSection", "reactivateSection", "createLocation", "renameLocation", "setLocationStatus", "createCompletionReason", "renameCompletionReason", "setCompletionReasonStatus"])
+  onGroupSettingsChanged: Group
+}
+
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
